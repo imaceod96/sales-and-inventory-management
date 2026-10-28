@@ -1,0 +1,694 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  CheckCircle2,
+  DollarSign,
+  History,
+  MoreVertical,
+  Package,
+  PackagePlus,
+  Pencil,
+  Plus,
+  Power,
+  PowerOff,
+  Search,
+  SlidersHorizontal,
+} from 'lucide-react';
+import { useApplication } from '../../../../app/providers/ApplicationProvider';
+import { useSession } from '../../../../app/providers/SessionProvider';
+import { Button } from '../../../../shared/components/Button';
+import { Card } from '../../../../shared/components/Card';
+import { DataTable, TableColumn } from '../../../../shared/components/DataTable';
+import { TextInput } from '../../../../shared/components/FormField';
+import { PageHeader } from '../../../../shared/components/PageHeader';
+import { useAsyncQuery } from '../../../../shared/hooks/useAsyncQuery';
+import { Permission } from '../../../../shared/types/permissions';
+import {
+  ProductAvailability,
+  ProductCatalogViewItem,
+  ProductRecord,
+  ProductStatus,
+} from '../../domain/entities/ProductRecord';
+import { useRouter } from '../../../../app/router/RouterProvider';
+import { ROUTES } from '../../../../app/router/routes';
+import { CorrectProductStockModal } from '../components/CorrectProductStockModal';
+import { EditProductSalePriceModal } from '../components/EditProductSalePriceModal';
+import { NewProductEntryModal } from '../components/NewProductEntryModal';
+import { ProductStatusChangeModal } from '../components/ProductStatusChangeModal';
+import { RegisterMerchandiseEntryModal } from '../components/RegisterMerchandiseEntryModal';
+
+const ITEMS_PER_PAGE = 25;
+
+export function ProductsPage() {
+  const { actor, can } = useSession();
+  const { useCases, dataRevision, notifyDataChanged } = useApplication();
+  const { navigate } = useRouter();
+
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [isNewEntryModalOpen, setIsNewEntryModalOpen] = useState<boolean>(false);
+  const [selectedProductForEntry, setSelectedProductForEntry] = useState<ProductCatalogViewItem | null>(null);
+  const [selectedProductForPriceEdit, setSelectedProductForPriceEdit] = useState<ProductCatalogViewItem | null>(null);
+  const [selectedProductForStockCorrection, setSelectedProductForStockCorrection] = useState<ProductCatalogViewItem | null>(null);
+  const [statusChangeTarget, setStatusChangeTarget] = useState<{
+    product: ProductCatalogViewItem;
+    targetStatus: ProductStatus;
+  } | null>(null);
+
+  const [activeMenuProductId, setActiveMenuProductId] = useState<string | null>(null);
+  const menuContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const [successBanner, setSuccessBanner] = useState<string | null>(null);
+
+  const canManageProducts = can(Permission.MANAGE_PRODUCTS);
+  const canViewCosts = can(Permission.VIEW_PRODUCT_COSTS);
+
+  // Cerrar menú contextual al hacer clic fuera
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        menuContainerRef.current &&
+        !menuContainerRef.current.contains(event.target as Node)
+      ) {
+        setActiveMenuProductId(null);
+      }
+    }
+    if (activeMenuProductId !== null) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [activeMenuProductId]);
+
+  const { data: products, isLoading, reload } = useAsyncQuery(
+    () => useCases.warehouse.listProducts.execute(actor),
+    [useCases.warehouse.listProducts, actor, dataRevision]
+  );
+
+  const filteredProducts = useMemo(() => {
+    const items = products ?? [];
+    const query = searchTerm.trim().toLowerCase();
+    let result = items;
+    if (query) {
+      result = items.filter(
+        (item) =>
+          item.code.toLowerCase().includes(query) ||
+          item.name.toLowerCase().includes(query) ||
+          (item.sku && item.sku.toLowerCase().includes(query)) ||
+          item.categoryLabel.toLowerCase().includes(query)
+      );
+    }
+    // Garantizar que los productos inactivos siempre se ubiquen al final
+    return result.slice().sort((a, b) => {
+      if (a.status !== b.status) {
+        return a.status === ProductStatus.ACTIVE ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, 'es');
+    });
+  }, [products, searchTerm]);
+
+  // Paginación a 25 registros por página
+  const totalItems = filteredProducts.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / ITEMS_PER_PAGE));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedProducts = useMemo(() => {
+    const startIndex = (safeCurrentPage - 1) * ITEMS_PER_PAGE;
+    return filteredProducts.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+  }, [filteredProducts, safeCurrentPage]);
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    setCurrentPage(1);
+    if (successBanner) setSuccessBanner(null);
+  };
+
+  const handleProductCreated = (product: ProductRecord) => {
+    setSuccessBanner(
+      `Producto «${product.name}» registrado exitosamente con una entrada inicial de ${product.currentStock} unidades.`
+    );
+    notifyDataChanged();
+    void reload();
+  };
+
+  const handleEntryRegistered = (product: ProductRecord, message: string) => {
+    setSuccessBanner(message);
+    notifyDataChanged();
+    void reload();
+  };
+
+  const handlePriceUpdated = (product: ProductRecord, message: string) => {
+    setSuccessBanner(message);
+    notifyDataChanged();
+    void reload();
+  };
+
+  const handleStockCorrected = (product: ProductRecord, message: string) => {
+    setSuccessBanner(message);
+    notifyDataChanged();
+    void reload();
+  };
+
+  const handleStatusChanged = (product: ProductRecord, message: string) => {
+    setSuccessBanner(message);
+    notifyDataChanged();
+    void reload();
+  };
+
+  const columns = useMemo<readonly TableColumn<ProductCatalogViewItem>[]>(() => {
+    const cols: TableColumn<ProductCatalogViewItem>[] = [
+      {
+        key: 'name',
+        header: 'Producto',
+        render: (item) => (
+          <div>
+            <div className={`font-medium ${item.status === ProductStatus.INACTIVE ? 'text-slate-500' : 'text-slate-900'}`}>
+              {item.name}
+            </div>
+            <div className="text-[11px] text-slate-500">
+              {item.code} {item.sku ? `· SKU: ${item.sku}` : ''}
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'category',
+        header: 'Categoría',
+        render: (item) => (
+          <span className="text-xs text-slate-700">{item.categoryLabel}</span>
+        ),
+      },
+      {
+        key: 'unit',
+        header: 'Unidad',
+        render: (item) => (
+          <span className="text-xs text-slate-600">{item.unitLabel}</span>
+        ),
+      },
+      {
+        key: 'stock',
+        header: 'Existencia',
+        align: 'right',
+        tabular: true,
+        render: (item) => (
+          <span
+            className={`font-semibold ${
+              item.status === ProductStatus.INACTIVE
+                ? 'text-slate-400'
+                : item.stockQuantity <= 0
+                ? 'text-amber-700'
+                : 'text-slate-900'
+            }`}
+          >
+            {item.stockQuantity.toFixed(2)}
+          </span>
+        ),
+      },
+    ];
+
+    if (canViewCosts) {
+      cols.push(
+        {
+          key: 'purchaseCost',
+          header: 'Último costo',
+          align: 'right',
+          tabular: true,
+          render: (item) =>
+            item.purchaseCost !== undefined ? `$${item.purchaseCost.toFixed(2)}` : '—',
+        },
+        {
+          key: 'margin',
+          header: 'Margen',
+          align: 'right',
+          tabular: true,
+          render: (item) =>
+            item.marginPercentage !== undefined ? (
+              <span className="text-emerald-700 font-medium">
+                +{item.marginPercentage.toFixed(2)}%
+              </span>
+            ) : (
+              '—'
+            ),
+        }
+      );
+    }
+
+    cols.push({
+      key: 'salePrice',
+      header: 'Precio venta',
+      align: 'right',
+      tabular: true,
+      render: (item) => (
+        <span
+          className={`font-semibold ${
+            item.status === ProductStatus.INACTIVE ? 'text-slate-400' : 'text-[#123F55]'
+          }`}
+        >
+          ${item.salePrice}
+        </span>
+      ),
+    });
+
+    // Columna 1: Disponibilidad operativa
+    cols.push({
+      key: 'availability',
+      header: 'Disponibilidad',
+      align: 'right',
+      render: (item) => {
+        if (item.availability === ProductAvailability.INACTIVE) {
+          return (
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+              Inactivo
+            </span>
+          );
+        }
+        if (item.availability === ProductAvailability.OUT_OF_STOCK) {
+          return (
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
+              Agotado
+            </span>
+          );
+        }
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+            Disponible
+          </span>
+        );
+      },
+    });
+
+    // Columna 2: Estado administrativo
+    cols.push({
+      key: 'status',
+      header: 'Estado',
+      align: 'right',
+      render: (item) => {
+        if (item.status === ProductStatus.INACTIVE) {
+          return (
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+              Inactivo
+            </span>
+          );
+        }
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+            Activo
+          </span>
+        );
+      },
+    });
+
+    // Columna 3: Menú de acciones contextual o acceso a historial
+    cols.push({
+      key: 'actions',
+      header: 'Acciones',
+      align: 'right',
+      render: (item) => {
+        if (!canManageProducts) {
+          return (
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => navigate(ROUTES.warehouseProductHistory(item.id))}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded border border-slate-200 transition-colors cursor-pointer"
+                title={`Ver historial y trazabilidad de ${item.name}`}
+              >
+                <History className="w-3.5 h-3.5 text-slate-500" />
+                <span>Historial</span>
+              </button>
+            </div>
+          );
+        }
+
+        const isMenuOpen = activeMenuProductId === item.id;
+        const isActive = item.status === ProductStatus.ACTIVE;
+
+        return (
+          <div className="relative inline-block text-left" ref={isMenuOpen ? menuContainerRef : null}>
+            <div className="flex items-center justify-end gap-1">
+              {/* Botón de acceso rápido a nueva entrada si está activo */}
+              {isActive && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveMenuProductId(null);
+                    setSelectedProductForEntry(item);
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-[#123F55] bg-sky-50 hover:bg-sky-100 active:bg-sky-200 rounded border border-sky-200 transition-colors cursor-pointer"
+                  title={`Nueva entrada de mercancía para ${item.name}`}
+                >
+                  <PackagePlus className="w-3.5 h-3.5 text-[#1A5F7A]" />
+                  <span className="hidden sm:inline">Entrada</span>
+                </button>
+              )}
+
+              {/* Botón disparador del menú desplegable contextual */}
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveMenuProductId((current) => (current === item.id ? null : item.id))
+                }
+                className="p-1 rounded text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+                title={`Más acciones para ${item.name}`}
+                aria-haspopup="true"
+                aria-expanded={isMenuOpen}
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Panel del menú contextual */}
+            {isMenuOpen && (
+              <div
+                role="menu"
+                onMouseDown={(e) => e.stopPropagation()}
+                className="absolute right-0 z-30 mt-1 w-52 origin-top-right rounded-lg bg-white shadow-lg ring-1 ring-black/10 focus:outline-none divide-y divide-slate-100 py-1"
+              >
+                {/* Opción 1: Nueva entrada de mercancía */}
+                <div className="py-1">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={!isActive}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setActiveMenuProductId(null);
+                      setSelectedProductForEntry(item);
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs text-left ${
+                      isActive
+                        ? 'text-slate-700 hover:bg-slate-50 cursor-pointer'
+                        : 'text-slate-300 cursor-not-allowed'
+                    }`}
+                    title={
+                      isActive
+                        ? 'Registrar nueva entrada de mercancía'
+                        : 'Operación no permitida en productos inactivos'
+                    }
+                  >
+                    <PackagePlus className="w-3.5 h-3.5 text-[#1A5F7A] shrink-0" />
+                    <span>Nueva entrada</span>
+                  </button>
+
+                  {/* Opción: Corregir existencias */}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setActiveMenuProductId(null);
+                      setSelectedProductForStockCorrection(item);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 cursor-pointer text-left"
+                    title="Corregir existencias de inventario físico"
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span>Corregir existencias</span>
+                  </button>
+
+                  {/* Opción 2: Modificar precio de venta */}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setActiveMenuProductId(null);
+                      setSelectedProductForPriceEdit(item);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 cursor-pointer text-left"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span>Editar precio de venta</span>
+                  </button>
+                </div>
+
+                {/* Opción 3: Activar / Desactivar */}
+                <div className="py-1">
+                  {isActive ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setActiveMenuProductId(null);
+                        setStatusChangeTarget({
+                          product: item,
+                          targetStatus: ProductStatus.INACTIVE,
+                        });
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-amber-800 hover:bg-amber-50 cursor-pointer text-left"
+                    >
+                      <PowerOff className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                      <span>Desactivar producto</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setActiveMenuProductId(null);
+                        setStatusChangeTarget({
+                          product: item,
+                          targetStatus: ProductStatus.ACTIVE,
+                        });
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-emerald-800 hover:bg-emerald-50 cursor-pointer text-left"
+                    >
+                      <Power className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                      <span>Activar producto</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Opción 4: Ver historial (Fase 7 habilitada) */}
+                <div className="py-1">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setActiveMenuProductId(null);
+                      navigate(ROUTES.warehouseProductHistory(item.id));
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 cursor-pointer text-left"
+                    title={`Ver historial completo y Kardex de ${item.name}`}
+                  >
+                    <History className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span>Ver historial</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      },
+    });
+
+    return cols;
+  }, [canManageProducts, canViewCosts, activeMenuProductId]);
+
+  const showingStart = totalItems === 0 ? 0 : (safeCurrentPage - 1) * ITEMS_PER_PAGE + 1;
+  const showingEnd = Math.min(safeCurrentPage * ITEMS_PER_PAGE, totalItems);
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Productos"
+        subtitle={
+          canViewCosts
+            ? 'Catálogo general de productos, existencias, costos de compra y precios de venta.'
+            : 'Consulta de productos autorizada para operaciones en mostrador.'
+        }
+        actions={
+          canManageProducts ? (
+            <Button
+              variant="primary"
+              size="md"
+              icon={<Plus className="h-4 w-4" />}
+              onClick={() => setIsNewEntryModalOpen(true)}
+            >
+              + Nueva Mercancía
+            </Button>
+          ) : undefined
+        }
+      />
+
+      {successBanner && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-900"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-700" />
+            <span>{successBanner}</span>
+          </div>
+          <button
+            type="button"
+            className="text-xs text-emerald-700 hover:text-emerald-900 underline cursor-pointer"
+            onClick={() => setSuccessBanner(null)}
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
+
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
+          <div className="w-full max-w-sm">
+            <TextInput
+              aria-label="Buscar producto por código, SKU o nombre"
+              placeholder="Buscar por código, SKU o nombre…"
+              value={searchTerm}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              leadingIcon={<Search className="h-4 w-4" />}
+            />
+          </div>
+
+          <div className="text-xs text-slate-500">
+            <span>Vista: {actor.label}</span>
+            <span aria-hidden="true" className="mx-2">
+              ·
+            </span>
+            <span className="tabular-nums">
+              {totalItems} {totalItems === 1 ? 'producto' : 'productos'}
+            </span>
+          </div>
+        </div>
+
+        <DataTable
+          columns={columns}
+          rows={paginatedProducts}
+          getRowKey={(row) => row.id}
+          isLoading={isLoading}
+          emptyIcon={<Package className="h-5 w-5" />}
+          emptyTitle={
+            searchTerm.trim()
+              ? 'No se encontraron productos con ese criterio'
+              : 'No hay productos registrados en el almacén'
+          }
+          emptyDescription={
+            searchTerm.trim()
+              ? 'Intente con otro código o nombre de artículo.'
+              : 'El catálogo se encuentra vacío. Registre el primer producto mediante el botón "+ Nueva Mercancía".'
+          }
+          emptyAction={
+            !searchTerm.trim() && canManageProducts ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Plus className="h-3.5 w-3.5" />}
+                onClick={() => setIsNewEntryModalOpen(true)}
+              >
+                + Nueva Mercancía
+              </Button>
+            ) : undefined
+          }
+        />
+
+        {/* Paginación a 25 registros */}
+        {totalItems > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-6 py-3.5 text-xs text-slate-600">
+            <div>
+              Mostrando <strong className="font-semibold text-slate-800 tabular-nums">{showingStart}</strong> -{' '}
+              <strong className="font-semibold text-slate-800 tabular-nums">{showingEnd}</strong> de{' '}
+              <strong className="font-semibold text-slate-800 tabular-nums">{totalItems}</strong> productos
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="tabular-nums">
+                Página {safeCurrentPage} de {totalPages}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={safeCurrentPage <= 1}
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  icon={<ChevronLeft className="h-3.5 w-3.5" />}
+                  aria-label="Página anterior"
+                >
+                  Anterior
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={safeCurrentPage >= totalPages}
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  icon={<ChevronRight className="h-3.5 w-3.5" />}
+                  aria-label="Página siguiente"
+                >
+                  Siguiente
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Modal 1: Alta de producto con entrada inicial */}
+      {canManageProducts && (
+        <NewProductEntryModal
+          isOpen={isNewEntryModalOpen}
+          onClose={() => setIsNewEntryModalOpen(false)}
+          onSuccess={handleProductCreated}
+        />
+      )}
+
+      {/* Modal 2: Nueva entrada de mercancía para producto existente */}
+      {canManageProducts && (
+        <RegisterMerchandiseEntryModal
+          isOpen={selectedProductForEntry !== null}
+          product={selectedProductForEntry}
+          onClose={() => setSelectedProductForEntry(null)}
+          onSuccess={handleEntryRegistered}
+        />
+      )}
+
+      {/* Modal 3: Modificación independiente del precio de venta */}
+      {canManageProducts && selectedProductForPriceEdit !== null && (
+        <EditProductSalePriceModal
+          isOpen={selectedProductForPriceEdit !== null}
+          product={selectedProductForPriceEdit}
+          onClose={() => setSelectedProductForPriceEdit(null)}
+          onSuccess={handlePriceUpdated}
+        />
+      )}
+
+      {/* Modal 4: Activación y Desactivación de producto */}
+      {canManageProducts && statusChangeTarget !== null && (
+        <ProductStatusChangeModal
+          isOpen={statusChangeTarget !== null}
+          product={statusChangeTarget.product}
+          targetStatus={statusChangeTarget.targetStatus}
+          onClose={() => setStatusChangeTarget(null)}
+          onSuccess={handleStatusChanged}
+        />
+      )}
+
+      {/* Modal 5: Corrección manual de existencias físicas */}
+      {canManageProducts && selectedProductForStockCorrection !== null && (
+        <CorrectProductStockModal
+          isOpen={selectedProductForStockCorrection !== null}
+          product={selectedProductForStockCorrection}
+          onClose={() => setSelectedProductForStockCorrection(null)}
+          onSuccess={handleStockCorrected}
+        />
+      )}
+    </div>
+  );
+}

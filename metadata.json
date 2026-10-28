@@ -1,0 +1,6 @@
+{
+  "name": "Gestión Comercial — Inventario y Ventas",
+  "description": "Aplicación modular offline-first para la gestión de inventario, ventas y control económico de establecimientos comerciales.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

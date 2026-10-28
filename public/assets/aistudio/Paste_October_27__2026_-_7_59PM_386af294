@@ -1,0 +1,1248 @@
+# FASE 8 — BLOQUE 4
+## Inventario final, cierre definitivo de jornada, ganancias comerciales y trazabilidad de costos de compra
+
+### INSTRUCCIONES GENERALES
+
+Implementa este bloque sobre la aplicación existente en Google AI Studio.
+
+La aplicación es un sistema comercial local y completamente offline, desarrollado con React, TypeScript, Vite, Tailwind CSS, IndexedDB y arquitectura modular DDD.
+
+No reconstruyas la aplicación, no crees estructuras paralelas y no sustituyas funcionalidades que ya funcionan.
+
+Debes auditar primero la implementación existente y reutilizar sus entidades, puertos, adaptadores, repositorios, casos de uso y componentes visuales.
+
+El objetivo es completar el ciclo operativo de las jornadas y añadir el cálculo correcto de ganancias comerciales.
+
+**No avances automáticamente a otro bloque al finalizar.**
+
+---
+
+# 1. ESTADO ACTUAL DEL PROYECTO
+
+Ya se encuentran implementadas las siguientes funcionalidades:
+
+- Gestión de productos.
+- Categorías y unidades de medida.
+- Entradas de mercancía.
+- Historial de precios.
+- Movimientos de inventario.
+- Kardex.
+- Jornadas operativas.
+- Cuentas abiertas.
+- Despachos directos.
+- Despachos de cuentas abiertas.
+- Cortes parciales.
+- Selección automática de productos para cortes.
+- Conteo físico ciego.
+- Conciliación de existencias.
+- Detección de faltantes y sobrantes.
+- Aprobación de cortes parciales.
+- Ajustes automáticos de inventario.
+- Actividad comercial de los cortes parciales.
+- Expedientes históricos de jornadas.
+- Auditoría.
+- Respaldo y restauración de IndexedDB.
+
+La última versión comunicada de IndexedDB es la versión 8.
+
+El último bloque incorporó correctamente:
+
+- Número de despachos por intervalo.
+- Productos distintos despachados.
+- Cantidades despachadas.
+- Valor comercial de mercancía despachada.
+- Precios históricos de venta.
+- Desglose por producto.
+- Separación entre actividad comercial y diferencias físicas de inventario.
+
+Estas funcionalidades deben conservarse.
+
+---
+
+# 2. OBJETIVOS DEL BLOQUE
+
+Implementar cinco capacidades principales:
+
+1. Inventario físico final de jornada.
+2. Suspensión y reanudación del cierre.
+3. Conciliación, aprobación y cierre definitivo.
+4. Cálculo de ventas, costo de mercancía despachada y ganancia bruta.
+5. Trazabilidad de existencias con diferentes costos de compra y bloqueo selectivo de cambios de precio.
+
+Todos los procesos deben funcionar offline.
+
+Las operaciones críticas deben ser transaccionales, idempotentes y auditables.
+
+---
+
+# 3. AUDITORÍA INICIAL OBLIGATORIA
+
+Antes de escribir código, inspeccionar especialmente:
+
+### Módulo warehouse
+
+- WorkdayRecord.
+- InventoryCutRecord.
+- PartialInventoryCutRecord.
+- ProductRecord.
+- InventoryMovementRecord.
+- ProductHistoryRecords.
+- StartWorkdayClosingUseCase.
+- PrepareFinalInventorySelectionUseCase.
+- Casos de uso de cortes parciales.
+- Conciliación con Kardex.
+- Reutilización de conteos parciales.
+- GetWorkdayDetailUseCase.
+- WorkdayDetailPage.
+- InventoryCutsPage.
+
+### Módulo sales
+
+- SaleRecord.
+- Líneas de venta.
+- CreateOpenSaleAccountUseCase.
+- UpdateOpenSaleAccountUseCase.
+- DispatchSaleUseCase.
+- CancelOpenSaleAccountUseCase.
+- Repositorios de ventas.
+- Precios históricos.
+- Validación de cuentas abiertas.
+
+### Infraestructura
+
+- IndexedDB.
+- Migraciones.
+- Repositorios.
+- Auditoría.
+- Backups.
+- Restauración.
+
+### Presentación
+
+- HomePage.
+- Sidebar.
+- Formularios.
+- Modales.
+- Tablas.
+- Componentes compartidos.
+
+Identificar qué funcionalidades ya existen, cuáles están incompletas y cuáles necesitan ampliación.
+
+No duplicar implementaciones existentes.
+
+---
+
+# 4. REGLA FUNDAMENTAL: JORNADA OPERATIVA
+
+La jornada es una unidad operativa independiente del calendario.
+
+Puede comenzar un día y terminar después de medianoche.
+
+Todos los despachos, cortes y movimientos deben vincularse mediante workdayId.
+
+No utilizar exclusivamente la fecha del calendario para calcular ventas o ganancias.
+
+Mantener los estados existentes:
+
+- OPEN.
+- CLOSING.
+- CLOSING_SUSPENDED.
+- CLOSED.
+
+Solo puede existir una jornada activa.
+
+La jornada no se cierra automáticamente a medianoche.
+
+El Administrador debe iniciar y finalizar manualmente la jornada.
+
+Se debe permitir cerrar una jornada sin ventas.
+
+---
+
+# 5. INICIAR INVENTARIO FINAL
+
+En HomePage, el Administrador tendrá la acción:
+
+**Cerrar jornada**
+
+Esta acción no cerrará inmediatamente la jornada.
+
+Iniciará el proceso de inventario físico final.
+
+Antes de comenzar, comprobar transaccionalmente:
+
+- Existe una jornada OPEN.
+- El usuario es ADMIN.
+- No existe un cierre incompatible en curso.
+- No hay cortes parciales pendientes de aprobación o cancelación que impidan establecer una conciliación consistente.
+- No existen cuentas abiertas pendientes.
+
+### Cuentas abiertas
+
+No se podrá iniciar el inventario final mientras exista cualquier cuenta OPEN.
+
+Mostrar:
+
+- Número de cuentas abiertas.
+- Folio de cada cuenta.
+- Nombre de cada cuenta.
+
+Permitir navegar hacia ellas.
+
+No cerrarlas ni despacharlas automáticamente.
+
+Cuando se cumplan las condiciones, pasar la jornada a CLOSING.
+
+Este cambio debe persistirse inmediatamente.
+
+---
+
+# 6. SELECCIÓN AUTOMÁTICA DEL INVENTARIO FINAL
+
+El inventario final debe incluir automáticamente todos los productos que estuvieron ACTIVE en cualquier momento de la jornada.
+
+Esto incluye:
+
+- Productos activos desde el inicio.
+- Productos creados durante la jornada.
+- Productos activados durante la jornada.
+- Productos posteriormente desactivados.
+- Productos agotados.
+- Productos sin ventas.
+- Productos con existencias cero.
+
+No incluir productos que permanecieron INACTIVE durante toda la jornada.
+
+La selección debe reconstruirse utilizando el historial real de estados y el estado inicial de la jornada.
+
+No depender únicamente del estado actual del catálogo.
+
+No permitir eliminar manualmente productos obligatorios del inventario final.
+
+---
+
+# 7. BLOQUEO OPERATIVO DURANTE CLOSING
+
+Mientras la jornada esté en CLOSING:
+
+- No permitir nuevos despachos.
+- No permitir entradas de mercancía.
+- No permitir correcciones manuales de existencias.
+- No permitir aprobar cortes parciales.
+- No permitir ninguna operación que modifique existencias fuera del propio proceso de cierre.
+
+El bloqueo debe aplicarse en los casos de uso y las transacciones.
+
+No limitarlo a deshabilitar botones.
+
+El inventario final debe poder guardarse parcialmente.
+
+Si la aplicación se cierra o recarga, el borrador debe recuperarse sin perder los conteos.
+
+---
+
+# 8. CONTEO FÍSICO CIEGO
+
+El Administrador realizará el conteo físico de todos los productos seleccionados que requieran conteo nuevo.
+
+Durante el conteo mostrar:
+
+- Nombre del producto.
+- Código.
+- SKU, si existe.
+- Categoría.
+- Unidad de medida.
+- Campo de cantidad física.
+
+No mostrar:
+
+- Existencia teórica.
+- Diferencia calculada.
+- Faltante.
+- Sobrante.
+- Valores económicos de diferencias.
+
+Permitir cantidades cero.
+
+Respetar las reglas de cantidades enteras o decimales según unidad de medida.
+
+Guardar cada conteo de manera persistente.
+
+Registrar:
+
+- Producto.
+- Cantidad.
+- Usuario.
+- Fecha y hora.
+- Historial de intentos de conteo.
+
+No sobrescribir silenciosamente intentos anteriores.
+
+---
+
+# 9. REUTILIZACIÓN DE CONTEOS PARCIALES
+
+El inventario final puede reutilizar conteos físicos procedentes de cortes parciales aprobados.
+
+Pero únicamente cuando sean válidos.
+
+### Regla obligatoria
+
+Un conteo parcial podrá reutilizarse si no ocurrió ningún movimiento real de inventario posterior a ese conteo que invalide su correspondencia con la existencia física actual.
+
+Se deben considerar:
+
+- Despachos.
+- Entradas.
+- Correcciones.
+- Otros ajustes de inventario.
+- Cualquier movimiento relevante.
+
+El movimiento compensatorio generado por la aprobación del mismo corte parcial no debe invalidar automáticamente su propio conteo, siempre que se haya conciliado correctamente.
+
+Si hubo un movimiento posterior que invalida el conteo:
+
+**El producto debe contarse nuevamente.**
+
+No sustituir el conteo físico por una cantidad calculada.
+
+Mostrar claramente:
+
+- Conteo reutilizado.
+- Conteo nuevo requerido.
+- Conteo pendiente.
+- Reconteo obligatorio.
+
+Conservar la referencia al corte parcial de origen.
+
+---
+
+# 10. SUSPENDER EL CIERRE
+
+Durante CLOSING, el Administrador podrá seleccionar:
+
+**Suspender inventario final**
+
+La jornada pasará a:
+
+CLOSING_SUSPENDED.
+
+Se conservarán:
+
+- Productos seleccionados.
+- Conteos realizados.
+- Conteos reutilizados.
+- Historial de conteos.
+- Progreso.
+- Auditoría.
+- Referencias temporales.
+
+La suspensión no aprobará diferencias ni modificará existencias por sí misma.
+
+### Operaciones durante la suspensión
+
+Mientras la jornada esté CLOSING_SUSPENDED, se podrán realizar nuevos despachos y las operaciones expresamente permitidas por las reglas operativas existentes.
+
+Los despachos continuarán vinculados a la misma jornada.
+
+No crear una nueva jornada.
+
+Los movimientos realizados durante la suspensión deberán quedar registrados en el Kardex.
+
+---
+
+# 11. REANUDAR EL CIERRE
+
+El Administrador podrá pulsar:
+
+**Reanudar inventario final**
+
+La jornada regresará a CLOSING.
+
+Antes de permitir la reanudación:
+
+- Comprobar que no existan cuentas abiertas.
+- Verificar el estado de la jornada.
+- Revisar los movimientos ocurridos durante la suspensión.
+- Revalidar los conteos.
+
+Si un producto tuvo movimientos posteriores a su conteo, marcarlo para reconteo cuando corresponda.
+
+No permitir aprobar un inventario final con conteos invalidados.
+
+Los productos no afectados deben conservar sus conteos válidos.
+
+Permitir suspender y reanudar varias veces.
+
+Mantener historial de cada suspensión y reanudación.
+
+---
+
+# 12. CONCILIACIÓN FINAL
+
+Cuando todos los productos tengan conteos válidos, permitir:
+
+**Revisar inventario final**
+
+Calcular para cada producto:
+
+- Existencia teórica reconciliada.
+- Existencia física.
+- Diferencia.
+- Clasificación de diferencia.
+- Valor económico del faltante.
+- Valor económico del sobrante.
+
+Clasificación:
+
+- Diferencia cero: SIN DIFERENCIA.
+- Diferencia negativa: FALTANTE.
+- Diferencia positiva: SOBRANTE.
+
+Utilizar el historial de movimientos del Kardex para validar las existencias teóricas.
+
+No aplicar nuevamente diferencias que ya fueron corregidas mediante cortes parciales aprobados.
+
+No generar ajustes duplicados.
+
+---
+
+# 13. VALORACIÓN ECONÓMICA DEL INVENTARIO FINAL
+
+Mostrar por separado:
+
+### A costo de compra
+
+- Valor de faltantes.
+- Valor de sobrantes.
+- Balance neto.
+
+### A precio de venta
+
+- Valor de faltantes.
+- Valor de sobrantes.
+- Balance neto.
+
+Mantener estas valoraciones separadas del resultado comercial de la jornada.
+
+No considerar los faltantes como ventas.
+
+No considerar los sobrantes como ingresos comerciales.
+
+Para valorar diferencias a costo de compra, utilizar la información de costos atribuible a las existencias afectadas cuando exista trazabilidad suficiente.
+
+Si hay diferentes costos de adquisición y no es posible determinar una valoración exacta, no presentar una cifra inventada como exacta.
+
+Documentar cualquier criterio de valoración utilizado.
+
+---
+
+# 14. NUEVA REGLA: EXISTENCIAS CON DISTINTOS COSTOS DE COMPRA
+
+Esta funcionalidad es fundamental para calcular correctamente las ganancias.
+
+Actualmente un producto puede recibir nuevas entradas mientras todavía conserva existencias anteriores.
+
+Las unidades antiguas y nuevas pueden tener costos de compra distintos.
+
+El sistema debe conservar esta diferencia.
+
+### Ejemplo
+
+Producto: Refresco.
+
+Existencia anterior:
+
+- 10 unidades.
+- Costo de compra: $100 por unidad.
+
+Nueva entrada:
+
+- 20 unidades.
+- Costo de compra: $130 por unidad.
+
+Nuevo precio de venta:
+
+- $180 por unidad.
+
+Existencia total:
+
+30 unidades.
+
+El inventario principal debe mostrar un solo producto con 30 unidades.
+
+Internamente deben distinguirse:
+
+- 10 unidades con costo $100.
+- 20 unidades con costo $130.
+
+No reemplazar retroactivamente el costo de las 10 unidades anteriores por $130.
+
+El precio de venta actualizado puede aplicarse a todas las unidades despachadas después del cambio.
+
+---
+
+# 15. MODELO DE CAPAS DE COSTO
+
+Implementar o reutilizar un modelo de capas de existencias por costo de adquisición.
+
+Cada capa debe conservar como mínimo:
+
+- Identificador único.
+- ProductId.
+- Identificador de entrada u origen.
+- Fecha de incorporación.
+- Cantidad original.
+- Cantidad restante.
+- Costo unitario de compra.
+- Referencia de auditoría.
+
+Debe existir consistencia entre:
+
+- Existencia total del producto.
+- Cantidades restantes de las capas.
+- Movimientos de inventario.
+- Despachos.
+- Ajustes.
+
+No crear productos duplicados por tener diferentes costos.
+
+No modificar los costos originales de las capas.
+
+### Migración de existencias anteriores
+
+Para existencias previas a esta implementación:
+
+- Reconstruir capas a partir de entradas y movimientos históricos cuando los datos sean suficientes.
+- Evitar crear capas duplicadas si se repite una migración.
+- Si solo existe un costo histórico verificable, utilizarlo únicamente para la cantidad cuya valoración pueda justificarse.
+- Si faltan datos, registrar explícitamente la limitación.
+- No inventar costos históricos.
+- No modificar silenciosamente los despachos anteriores.
+
+---
+
+# 16. ASIGNACIÓN AUTOMÁTICA DE COSTOS EN DESPACHOS
+
+El usuario no necesita elegir manualmente de qué lote físico sale cada producto.
+
+El sistema debe asignar automáticamente las cantidades despachadas a las capas de costo disponibles.
+
+Para garantizar resultados deterministas, utilizar como criterio técnico predeterminado las capas más antiguas primero, únicamente para la atribución contable del costo.
+
+Esto no implica que el usuario tenga que seleccionar físicamente la mercancía más antigua.
+
+La asignación debe ser:
+
+- Automática.
+- Consistente.
+- Reproducible.
+- Transaccional.
+- Auditable.
+
+Si en el futuro se define otra política de atribución, deberá implementarse explícitamente sin reescribir costos históricos.
+
+### Ejemplo
+
+Disponibles:
+
+- 10 unidades a costo $100.
+- 20 unidades a costo $130.
+
+Se despachan 15 unidades a precio de venta $180.
+
+Asignación:
+
+- 10 unidades × $100 = $1.000.
+- 5 unidades × $130 = $650.
+
+Costo total de mercancía despachada:
+
+$1.650.
+
+Valor comercial:
+
+15 × $180 = $2.700.
+
+Ganancia bruta:
+
+$2.700 − $1.650 = $1.050.
+
+La venta debe conservar la distribución de costos aplicada.
+
+No recalcular esta distribución cuando se realicen nuevas entradas.
+
+---
+
+# 17. INTEGRACIÓN DE COSTOS CON EL DESPACHO
+
+Ampliar de forma compatible el proceso de despacho.
+
+Al confirmar un despacho:
+
+1. Validar existencias.
+2. Validar permisos.
+3. Validar estado de jornada.
+4. Determinar las capas de costo disponibles.
+5. Asignar automáticamente las cantidades.
+6. Registrar el precio de venta histórico.
+7. Registrar el costo atribuible a cada cantidad.
+8. Descontar las existencias.
+9. Actualizar las cantidades restantes de las capas.
+10. Registrar Kardex.
+11. Registrar auditoría.
+12. Confirmar la transacción completa.
+
+Todas estas operaciones deben ejecutarse atómicamente.
+
+Si alguna falla, no debe quedar un despacho parcialmente registrado.
+
+### Información histórica del despacho
+
+Cada línea debe conservar:
+
+- ProductId.
+- Cantidad despachada.
+- Precio unitario de venta.
+- Importe comercial.
+- Costo total atribuible.
+- Distribución de cantidades por capas.
+- Costo unitario de cada capa utilizada.
+
+Los costos son información interna sensible.
+
+El Cajero no debe poder visualizarlos.
+
+---
+
+# 18. CONSISTENCIA DE CAPAS CON OTROS MOVIMIENTOS
+
+Las capas de costo deben mantenerse consistentes también cuando ocurran:
+
+- Entradas de mercancía.
+- Correcciones positivas.
+- Correcciones negativas.
+- Ajustes por cortes parciales.
+- Ajustes por inventario final.
+
+Una entrada crea o amplía la trazabilidad correspondiente sin alterar costos anteriores.
+
+Una salida de existencias debe reflejarse en las capas disponibles.
+
+Los ajustes positivos sin una adquisición identificable no deben inventar un costo de compra.
+
+Deben quedar identificados como existencias con origen de ajuste y valoración pendiente o con una política explícita y auditable si existe información suficiente.
+
+Los ajustes negativos deben disminuir existencias y capas de forma coherente.
+
+No permitir capas negativas.
+
+No permitir que el total de capas y la existencia del producto se desincronicen silenciosamente.
+
+Si hay inconsistencias históricas, mostrar un diagnóstico y bloquear únicamente las operaciones que no puedan ejecutarse de forma segura.
+
+---
+
+# 19. NUEVA REGLA: BLOQUEO DE PRECIO DE VENTA POR PRODUCTO
+
+Implementar la siguiente regla obligatoria:
+
+**Un producto no puede cambiar su precio de venta mientras esté incluido en alguna cuenta abierta.**
+
+El bloqueo es individual por producto.
+
+No es un bloqueo global de todos los precios.
+
+### Ejemplo
+
+Cuenta #001:
+
+- Arroz.
+- Aceite.
+
+Cuenta #002:
+
+- Aceite.
+
+Resultado:
+
+- Arroz: precio bloqueado.
+- Aceite: precio bloqueado.
+- Azúcar: precio editable.
+- Refresco: precio editable.
+
+### Desbloqueo
+
+Un producto podrá cambiar su precio cuando deje de aparecer en todas las cuentas abiertas.
+
+Esto puede ocurrir porque:
+
+- Se despacharon las cuentas.
+- Se cancelaron las cuentas.
+- Se eliminó el producto de las cuentas y se guardaron los cambios.
+
+Si permanece en una sola cuenta abierta, continuará bloqueado.
+
+### Validación obligatoria
+
+Al intentar guardar un cambio de precio:
+
+- Consultar las cuentas OPEN.
+- Identificar si alguna contiene el producto.
+- Bloquear el cambio si corresponde.
+- Mostrar los folios de las cuentas implicadas.
+- No modificar el precio.
+- No registrar un cambio de precio fallido como exitoso.
+
+Esta validación debe ejecutarse dentro de la operación transaccional correspondiente, para evitar condiciones de carrera.
+
+### Mensaje al usuario
+
+"El precio de venta de este producto no puede modificarse porque está incluido en las cuentas abiertas #001 y #003. Debes despachar, cancelar o retirar el producto de esas cuentas antes de cambiar su precio."
+
+Los productos que no aparezcan en cuentas abiertas deben poder cambiar sus precios normalmente.
+
+Mantener todas las demás validaciones existentes sobre precios de venta.
+
+---
+
+# 20. RESUMEN COMERCIAL DEL CIERRE DE JORNADA
+
+En el inventario final incorporar un apartado:
+
+**RESULTADO COMERCIAL DE LA JORNADA**
+
+Debe mostrar:
+
+1. Número total de despachos.
+2. Número de productos distintos despachados.
+3. Valor total de mercancía despachada.
+4. Costo total de compra atribuible a la mercancía despachada.
+5. Ganancia bruta estimada.
+6. Margen bruto porcentual.
+7. Desglose comercial por producto.
+
+### Fórmulas
+
+Valor comercial total:
+
+Suma de los importes históricos de todos los despachos de la jornada.
+
+Costo de mercancía despachada:
+
+Suma de los costos atribuibles a las capas consumidas en cada despacho.
+
+Ganancia bruta:
+
+Valor comercial total − Costo de mercancía despachada.
+
+Margen bruto porcentual:
+
+Ganancia bruta / Valor comercial total × 100.
+
+Si el valor comercial es cero, mostrar margen como no aplicable o 0 %, según convención documentada, sin dividir entre cero.
+
+### Ejemplo
+
+Valor comercial de mercancía despachada:
+
+$25.000.
+
+Costo de compra atribuible:
+
+$17.000.
+
+Ganancia bruta:
+
+$8.000.
+
+Margen bruto:
+
+32 %.
+
+No denominar este resultado ganancia neta.
+
+No descontar alquiler, salarios, electricidad u otros gastos que la aplicación no registra.
+
+No considerar este importe como efectivo cobrado.
+
+---
+
+# 21. DESGLOSE DE GANANCIAS POR PRODUCTO
+
+En el cierre definitivo, incluir una tabla con:
+
+- Producto.
+- Código o SKU.
+- Unidad de medida.
+- Cantidad despachada.
+- Número de despachos.
+- Valor comercial total.
+- Costo total atribuible.
+- Ganancia bruta.
+- Margen bruto porcentual.
+
+Cuando un producto tenga diferentes costos de adquisición, permitir consultar el detalle de las capas utilizadas.
+
+Ejemplo:
+
+Refresco:
+
+- 10 unidades a costo $100.
+- 5 unidades a costo $130.
+- Precio de venta $180.
+- Total vendido $2.700.
+- Costo total $1.650.
+- Ganancia bruta $1.050.
+
+No mezclar cantidades físicas de unidades incompatibles.
+
+Los importes monetarios sí pueden sumarse cuando correspondan a la misma moneda.
+
+---
+
+# 22. HISTÓRICO Y DATOS INCOMPLETOS
+
+Las ganancias deben calcularse utilizando datos verificables.
+
+Para despachos realizados antes de implementar las capas de costo:
+
+- Intentar reconstruir el costo histórico si existen datos suficientes.
+- No utilizar automáticamente el costo actual como si fuera el costo histórico.
+- No modificar registros históricos inmutables.
+- No inventar distribuciones de costos.
+- Identificar los despachos cuyo costo no pueda determinarse.
+
+Cuando existan costos históricos desconocidos, mostrar:
+
+- Valor comercial conocido.
+- Costo conocido de los despachos valorables.
+- Valor comercial pendiente de valoración.
+- Estado de valoración incompleta.
+
+No presentar una ganancia total como exacta si faltan costos relevantes.
+
+Los nuevos despachos deben conservar su costo atribuible desde el momento de confirmación.
+
+---
+
+# 23. APROBACIÓN DEL INVENTARIO FINAL
+
+Una vez terminado el conteo y revisadas las diferencias, permitir:
+
+**Aprobar inventario final y cerrar jornada**
+
+Requisitos:
+
+- Usuario ADMIN.
+- Jornada en CLOSING.
+- Ninguna cuenta OPEN.
+- Todos los productos obligatorios incluidos.
+- Ningún conteo pendiente.
+- Ningún reconteo requerido.
+- Conciliación actualizada.
+- Motivo obligatorio para cada diferencia no nula.
+- Existencias resultantes no negativas.
+- Ausencia de operaciones incompatibles.
+
+### Transacción de aprobación
+
+Realizar atómicamente:
+
+1. Revalidar el estado de jornada.
+2. Revalidar los conteos.
+3. Revalidar los movimientos.
+4. Calcular las diferencias definitivas.
+5. Aplicar únicamente ajustes nuevos.
+6. Actualizar existencias.
+7. Actualizar capas de costo cuando corresponda.
+8. Registrar Kardex.
+9. Registrar auditoría.
+10. Consolidar resultados comerciales.
+11. Consolidar resultados del inventario.
+12. Registrar fecha y usuario de cierre.
+13. Cambiar jornada a CLOSED.
+
+Si ocurre un error, la transacción debe revertirse completamente.
+
+No permitir aprobaciones duplicadas.
+
+No permitir cerrar una jornada dos veces.
+
+---
+
+# 24. JORNADA SIN VENTAS
+
+Permitir cerrar una jornada que no tenga despachos.
+
+En este caso:
+
+- Despachos: 0.
+- Valor comercial: $0.00.
+- Costo de mercancía despachada: $0.00.
+- Ganancia bruta: $0.00.
+
+El inventario final sigue siendo obligatorio para los productos seleccionados según las reglas de actividad.
+
+No generar ventas ficticias.
+
+No omitir la conciliación física.
+
+---
+
+# 25. EXPEDIENTE HISTÓRICO DEFINITIVO
+
+Una jornada CLOSED debe conservar un expediente permanente.
+
+Mantener o completar las pestañas:
+
+### Resumen
+
+- Folio.
+- Fecha y hora de apertura.
+- Fecha y hora de cierre.
+- Usuario que abrió.
+- Usuario que cerró.
+- Estado.
+- Despachos.
+- Valor comercial.
+- Costo de mercancía despachada.
+- Ganancia bruta.
+- Margen bruto.
+- Balance final de inventario.
+
+### Ventas
+
+- Despachos de la jornada.
+- Folios.
+- Fechas.
+- Productos.
+- Cantidades.
+- Precios históricos.
+- Importes.
+
+### Cortes parciales
+
+- Todos los cortes realizados.
+- Estados.
+- Intervalos.
+- Actividad comercial.
+- Diferencias.
+- Ajustes.
+
+### Inventario final
+
+- Todos los productos seleccionados.
+- Conteos físicos.
+- Conteos reutilizados.
+- Diferencias.
+- Motivos.
+- Ajustes.
+- Valoraciones.
+
+### Movimientos
+
+- Entradas.
+- Despachos.
+- Correcciones.
+- Ajustes por cortes parciales.
+- Ajustes por inventario final.
+
+### Auditoría
+
+- Apertura.
+- Suspensiones.
+- Reanudaciones.
+- Conteos.
+- Aprobación.
+- Cierre.
+- Usuarios y marcas temporales.
+
+No eliminar ni sobrescribir información histórica.
+
+---
+
+# 26. PERMISOS
+
+### ADMIN
+
+Puede:
+
+- Iniciar cierre.
+- Contar inventario.
+- Suspender cierre.
+- Reanudar cierre.
+- Revisar diferencias.
+- Aprobar cierre.
+- Consultar costos.
+- Consultar ganancias.
+- Consultar valoraciones completas.
+- Consultar expedientes históricos.
+
+### CASHIER
+
+No puede:
+
+- Iniciar o aprobar cierre.
+- Modificar conteos.
+- Suspender o reanudar cierre.
+- Consultar costos de compra.
+- Consultar capas de costo.
+- Consultar ganancias.
+- Consultar márgenes.
+- Consultar valoraciones sensibles del inventario.
+
+Mantener los permisos comerciales ya existentes.
+
+Aplicar restricciones también en casos de uso y proyecciones de datos.
+
+---
+
+# 27. INTERFAZ Y EXPERIENCIA DE USUARIO
+
+La interfaz debe respetar el diseño actual de la aplicación.
+
+Utilizar la identidad visual existente.
+
+Mantener formularios y modales adaptables al tamaño de la ventana.
+
+### Inventario final
+
+Mostrar:
+
+- Progreso del conteo.
+- Productos pendientes.
+- Productos contados.
+- Productos reutilizados.
+- Productos que requieren reconteo.
+
+### Acciones
+
+- Guardar conteo.
+- Continuar.
+- Suspender inventario.
+- Reanudar inventario.
+- Revisar diferencias.
+- Aprobar y cerrar jornada.
+
+Los botones deben permanecer accesibles.
+
+Utilizar desplazamiento interno en formularios extensos.
+
+Evitar desbordamientos.
+
+No exigir cambiar el zoom de la ventana.
+
+Mostrar mensajes claros cuando una operación esté bloqueada.
+
+---
+
+# 28. PERSISTENCIA Y MIGRACIONES
+
+Actualizar IndexedDB únicamente cuando sea necesario.
+
+Si se requieren nuevos almacenes o índices:
+
+- Crear migración incremental.
+- No destruir datos existentes.
+- No reinicializar la base.
+- No borrar jornadas.
+- No borrar ventas.
+- No borrar cortes.
+- No borrar productos.
+- No borrar movimientos.
+
+Garantizar compatibilidad con datos anteriores.
+
+Actualizar el sistema de backup y restauración para incluir:
+
+- Capas de costo.
+- Asignaciones de costo por despacho.
+- Inventarios finales.
+- Historial de suspensión y reanudación.
+- Resultados económicos de jornadas.
+- Nuevos registros de auditoría.
+
+Validar integridad y referencias al restaurar.
+
+No permitir restauraciones parciales que dejen existencias y capas de costo inconsistentes.
+
+---
+
+# 29. PRUEBAS OBLIGATORIAS
+
+Ejecutar pruebas que cubran, como mínimo:
+
+### Inventario final
+
+1. No iniciar cierre sin jornada abierta.
+2. No iniciar cierre con cuentas OPEN.
+3. Incluir productos activos durante cualquier momento de la jornada.
+4. Incluir productos agotados.
+5. Incluir productos posteriormente desactivados.
+6. Excluir productos inactivos durante toda la jornada.
+7. Conteo ciego.
+8. Guardado persistente de conteos.
+9. Recuperación tras recargar.
+10. Detección de faltantes.
+11. Detección de sobrantes.
+12. Conteo sin diferencias.
+13. Motivos obligatorios.
+14. No duplicar ajustes previos.
+
+### Suspensión y reanudación
+
+15. Suspender cierre.
+16. Permitir despachos durante suspensión.
+17. Reanudar cierre.
+18. Bloquear reanudación con cuentas abiertas.
+19. Invalidar conteos afectados por movimientos posteriores.
+20. Conservar conteos no afectados.
+21. Permitir múltiples suspensiones.
+22. Recuperar estado tras reinicio.
+
+### Capas de costo
+
+23. Crear capa en una entrada.
+24. Mantener costo anterior al recibir mercancía nueva.
+25. Mantener diferentes costos para el mismo producto.
+26. Mostrar una única existencia consolidada.
+27. Asignar automáticamente costos al despachar.
+28. Consumir cantidades de varias capas.
+29. Impedir cantidades negativas.
+30. Mantener consistencia entre capas y stock.
+31. Registrar asignaciones históricas.
+32. No modificar costos de despachos anteriores.
+33. Gestionar ajustes positivos sin inventar costos.
+34. Gestionar ajustes negativos coherentemente.
+
+### Precios y cuentas abiertas
+
+35. Bloquear cambio de precio de producto incluido en cuenta OPEN.
+36. Permitir cambiar precio de producto no incluido en cuentas OPEN.
+37. Mantener bloqueo si el producto está en varias cuentas.
+38. Desbloquear al despachar todas las cuentas que lo contienen.
+39. Desbloquear al cancelar todas esas cuentas.
+40. Desbloquear al retirar el producto de todas las cuentas.
+41. Validación transaccional del bloqueo.
+42. Conservar historial de precios.
+
+### Ganancias
+
+43. Calcular valor comercial de jornada.
+44. Calcular costo de mercancía despachada.
+45. Calcular ganancia bruta.
+46. Calcular margen porcentual.
+47. Calcular ganancias con varios costos de compra.
+48. Calcular ganancias con varios precios históricos de venta.
+49. No recalcular ventas antiguas con precios actuales.
+50. Identificar costos históricos desconocidos.
+51. No presentar ganancias incompletas como exactas.
+52. Separar ganancias y diferencias de inventario.
+
+### Cierre definitivo
+
+53. Aprobar inventario final.
+54. Aplicar ajustes una sola vez.
+55. Registrar Kardex.
+56. Registrar auditoría.
+57. Cerrar jornada atómicamente.
+58. Impedir doble cierre.
+59. Cerrar jornada sin ventas.
+60. Conservar expediente histórico.
+61. Impedir despachos en CLOSED.
+62. Mantener permisos ADMIN/CASHIER.
+63. Recuperar información tras reinicio.
+64. Restaurar respaldo con nuevas estructuras.
+65. TypeScript sin errores.
+66. Build de producción correcto.
+
+Agregar pruebas adicionales si la auditoría detecta escenarios relevantes.
+
+No afirmar que las pruebas se ejecutaron si no existe evidencia de su ejecución.
+
+---
+
+# 30. RESTRICCIONES FINALES
+
+No implementar:
+
+- Cobros.
+- Pagos.
+- Métodos de pago.
+- Caja registradora.
+- Facturación.
+- Arqueos de efectivo.
+- Gastos operativos.
+- Cálculo de ganancia neta.
+
+La aplicación registra mercancía despachada y calcula resultados comerciales estimados.
+
+No cambiar el significado de los cortes parciales.
+
+No modificar sus aprobaciones históricas.
+
+No alterar los precios históricos de venta.
+
+No introducir dependencias innecesarias.
+
+Respetar estrictamente la arquitectura modular DDD.
+
+No utilizar Git ni verificaciones de ramas.
+
+---
+
+# 31. INFORME FINAL OBLIGATORIO
+
+Al terminar, entregar un informe detallado con:
+
+1. Resultado de auditoría inicial.
+2. Archivos creados.
+3. Archivos modificados.
+4. Versión final de IndexedDB.
+5. Modelo de capas de costo.
+6. Migración de existencias anteriores.
+7. Asignación de costos a despachos.
+8. Regla de bloqueo de precios por producto.
+9. Flujo de inventario final.
+10. Suspensión y reanudación.
+11. Reutilización de conteos parciales.
+12. Conciliación final.
+13. Ajustes de inventario.
+14. Cálculo de ventas.
+15. Cálculo de costos.
+16. Cálculo de ganancia bruta.
+17. Cálculo de margen.
+18. Expediente histórico.
+19. Permisos.
+20. Backup y restauración.
+21. Pruebas ejecutadas.
+22. Resultado de TypeScript.
+23. Resultado del build.
+24. Limitaciones o pendientes reales.
+
+No declarar funcionalidades completas si quedan parcialmente implementadas.
+
+No avanzar automáticamente a otro bloque.
+
+## RESULTADO ESPERADO
+
+Al terminar una jornada, el Administrador podrá:
+
+- Realizar el inventario físico final.
+- Reutilizar conteos parciales válidos.
+- Suspender y reanudar el cierre.
+- Identificar faltantes y sobrantes.
+- Aprobar los ajustes correspondientes.
+- Consultar el valor comercial total de mercancía despachada.
+- Consultar el costo real atribuible a la mercancía despachada.
+- Consultar la ganancia bruta y el margen.
+- Consultar el detalle de costos de adquisición utilizados.
+- Cerrar definitivamente la jornada.
+- Recuperar posteriormente su expediente completo.
+
+Los productos conservarán sus diferentes costos históricos de adquisición.
+
+Los precios de venta solo estarán bloqueados cuando el producto aparezca en una cuenta abierta.
+
+Todo deberá funcionar offline, sin cobros ni pagos, manteniendo la integridad de IndexedDB y la arquitectura modular existente.
