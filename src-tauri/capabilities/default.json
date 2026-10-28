@@ -1,0 +1,10 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
+  "identifier": "default",
+  "description": "Capacidades y permisos por defecto para la aplicación comercial",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "opener:default"
+  ]
+}
